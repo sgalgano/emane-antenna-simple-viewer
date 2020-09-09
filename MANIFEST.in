@@ -1,0 +1,4 @@
+include README.md
+include antenna30dsector.xml
+include blockageaft.xml
+recursive-include images *

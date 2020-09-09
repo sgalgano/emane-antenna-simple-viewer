@@ -1,0 +1,133 @@
+#!/usr/bin/env python
+#
+# Copyright (c) 2015,2017,2020 - Adjacent Link LLC, Bridgewater,
+# New Jersey
+# All rights reserved.
+#
+# Redistribution and use in source and binary forms, with or without
+# modification, are permitted provided that the following conditions
+# are met:
+#
+# * Redistributions of source code must retain the above copyright
+#   notice, this list of conditions and the following disclaimer.
+# * Redistributions in binary form must reproduce the above copyright
+#   notice, this list of conditions and the following disclaimer in
+#   the documentation and/or other materials provided with the
+#   distribution.
+# * Neither the name of Adjacent Link LLC nor the names of its
+#   contributors may be used to endorse or promote products derived
+#   from this software without specific prior written permission.
+#
+# THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
+# "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
+# LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS
+# FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE
+# COPYRIGHT OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT,
+# INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING,
+# BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+# LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
+# CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
+# LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN
+# ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
+# POSSIBILITY OF SUCH DAMAGE.
+
+from __future__ import absolute_import, division, print_function
+
+from lxml import etree
+from argparse import ArgumentParser
+from mayavi import mlab
+import numpy as np
+
+NUM_ELEVATION=181
+NUM_BEARING=360
+NORMALIZE_MAX_DB=40
+
+def loadProfile(filename,fill):
+    profile = np.empty((NUM_ELEVATION,NUM_BEARING))
+    profile[:] = fill
+    gainMax = fill
+
+    doc = etree.parse(filename)
+
+    root = doc.getroot()
+
+    for elevation in root.xpath('/antennaprofile//elevation'):
+        elevationMin = int(elevation.get('min'))
+        elevationMax = int(elevation.get('max'))
+
+        for bearing in elevation.xpath('bearing'):
+            bearingMin = int(bearing.get('min'))
+            bearingMax = int(bearing.get('max'))
+
+            for gain in bearing.xpath('gain'):
+                antennaGain = int(round(float(gain.get('value'))))
+                gainMax = max(antennaGain,gainMax)
+
+                for elevationDegrees in range(elevationMin,elevationMax+1):
+                    for bearingDegrees in range(bearingMin,bearingMax+1):
+                        # convert elevation to index: [0,180]
+                        profile[elevationDegrees + 90, bearingDegrees] = antennaGain
+
+    return (profile,gainMax)
+
+
+def render(profile,gainMax,color,use_line):
+    normalizedGain = NORMALIZE_MAX_DB - gainMax
+    x = []
+    y = []
+    z = []
+
+    for elevation in range(0,NUM_ELEVATION):
+        for bearing in range(0,NUM_BEARING):
+            rho =  profile[elevation,bearing] + normalizedGain
+
+            if rho >= 0:
+                theta =  np.radians(bearing)
+                phi = np.radians(elevation)
+
+                x.append(rho * np.sin(phi) * np.cos(theta))
+                y.append(rho * np.sin(phi) * np.sin(theta))
+                z.append(rho * np.cos(phi))
+
+    if len(x):
+        if use_line:
+            mlab.plot3d(x,y,z,color=color,tube_radius=.5)
+        else:
+            mlab.points3d(x,y,z,color=color,mode='point')
+
+description='Simple rendering utility for EMANE antenna patterns.'
+
+argument_parser = ArgumentParser(description=description)
+
+argument_parser.add_argument('antenna-profile-file',
+                             type=str,
+                             default='',
+                             help='antenna profile XML file')
+
+argument_parser.add_argument('--null',
+                             type=int,
+                             metavar='DECIBELS',
+                             default=-200,
+                             help='null value representing full loss in dB [default: %(default)s]')
+
+argument_parser.add_argument("-l",
+                             "--line",
+                             action='store_true',
+                             default=False,
+                             help="render as a line [default: %(default)s]")
+
+ns = argument_parser.parse_args()
+
+args = vars(ns)
+
+mlab.figure('EMANE Antenna Simple Viewer')
+
+mlab.points3d([0],[0],[0],color=(0,0,1),mode='sphere')
+
+# load the antenna profile
+profile,gainMax = loadProfile(args['antenna-profile-file'],
+                              args['null'])
+
+render(profile,gainMax,(0,1,0),args['line'])
+
+mlab.show()
