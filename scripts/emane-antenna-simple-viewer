@@ -37,49 +37,54 @@ from lxml import etree
 from argparse import ArgumentParser
 from mayavi import mlab
 import numpy as np
+import matplotlib.pyplot as plt
+import os
 
 NUM_ELEVATION=181
 NUM_BEARING=360
-NORMALIZE_MAX_DB=40
 
 def loadProfile(filename,fill):
     profile = np.empty((NUM_ELEVATION,NUM_BEARING))
     profile[:] = fill
-    gainMax = fill
-
+    gain_max = fill
+    abs_gain_max = None
     doc = etree.parse(filename)
 
     root = doc.getroot()
 
     for elevation in root.xpath('/antennaprofile//elevation'):
-        elevationMin = int(elevation.get('min'))
-        elevationMax = int(elevation.get('max'))
+        elevation_min = int(elevation.get('min'))
+        elevation_max = int(elevation.get('max'))
 
         for bearing in elevation.xpath('bearing'):
-            bearingMin = int(bearing.get('min'))
-            bearingMax = int(bearing.get('max'))
+            bearing_min = int(bearing.get('min'))
+            bearing_max = int(bearing.get('max'))
 
             for gain in bearing.xpath('gain'):
-                antennaGain = int(round(float(gain.get('value'))))
-                gainMax = max(antennaGain,gainMax)
+                antenna_gain = int(round(float(gain.get('value'))))
+                gain_max = max(antenna_gain,gain_max)
+                if abs_gain_max == None:
+                    abs_gain_max = np.abs(antenna_gain)
+                else:
+                    abs_gain_max = max(np.abs(antenna_gain),abs_gain_max)
 
-                for elevationDegrees in range(elevationMin,elevationMax+1):
-                    for bearingDegrees in range(bearingMin,bearingMax+1):
+                for elevation_degrees in range(elevation_min,elevation_max+1):
+                    for bearing_degrees in range(bearing_min,bearing_max+1):
                         # convert elevation to index: [0,180]
-                        profile[elevationDegrees + 90, bearingDegrees] = antennaGain
+                        profile[elevation_degrees + 90, bearing_degrees] = antenna_gain
 
-    return (profile,gainMax)
+    return (profile,gain_max,abs_gain_max)
 
 
-def render(profile,gainMax,color,use_line):
-    normalizedGain = NORMALIZE_MAX_DB - gainMax
+def render(profile,gain_max,abs_gain_max,use_line):
+    normalized_gain = abs_gain_max - gain_max
     x = []
     y = []
     z = []
-
+    s = []
     for elevation in range(0,NUM_ELEVATION):
         for bearing in range(0,NUM_BEARING):
-            rho =  profile[elevation,bearing] + normalizedGain
+            rho =  profile[elevation,bearing] + normalized_gain
 
             if rho >= 0:
                 theta =  np.radians(bearing)
@@ -88,12 +93,24 @@ def render(profile,gainMax,color,use_line):
                 x.append(rho * np.sin(phi) * np.cos(theta))
                 y.append(rho * np.sin(phi) * np.sin(theta))
                 z.append(rho * np.cos(phi))
+                s.append(profile[elevation,bearing])
 
     if len(x):
         if use_line:
-            mlab.plot3d(x,y,z,color=color,tube_radius=.5)
+            mlab.plot3d(x,y,z,color=(0,1,0),tube_radius=.5)
         else:
-            mlab.points3d(x,y,z,color=color,mode='point')
+            pts = mlab.points3d(x,y,z,s,mode='point')
+            pts.glyph.glyph.color_mode = 'color_by_scalar'
+            pts.glyph.color_mode = 'color_by_scalar'
+            pts.glyph.glyph.scale_mode = 'data_scaling_off'
+            lut = pts.module_manager.scalar_lut_manager.lut.table.to_array()
+            cmap = plt.cm.coolwarm
+            pts.module_manager.scalar_lut_manager.lut.table = lut
+            pts.module_manager.scalar_lut_manager.show_scalar_bar = True
+            pts.module_manager.scalar_lut_manager.show_legend = True
+            pts.module_manager.scalar_lut_manager.data_range = np.array([min(s), max(s)])
+            pts.module_manager.scalar_lut_manager.data_name=''
+
 
 description='Simple rendering utility for EMANE antenna patterns.'
 
@@ -105,7 +122,7 @@ argument_parser.add_argument('antenna-profile-file',
                              help='antenna profile XML file')
 
 argument_parser.add_argument('--null',
-                             type=int,
+                             type=float,
                              metavar='DECIBELS',
                              default=-200,
                              help='null value representing full loss in dB [default: %(default)s]')
@@ -116,18 +133,34 @@ argument_parser.add_argument("-l",
                              default=False,
                              help="render as a line [default: %(default)s]")
 
+argument_parser.add_argument("-t",
+                             "--show-title",
+                             action='store_true',
+                             default=False,
+                             help="show title [default: %(default)s]")
+
+argument_parser.add_argument("-o",
+                             "--show-origin",
+                             action='store_true',
+                             default=False,
+                             help="show origin [default: %(default)s]")
+
 ns = argument_parser.parse_args()
 
 args = vars(ns)
 
 mlab.figure('EMANE Antenna Simple Viewer')
 
-mlab.points3d([0],[0],[0],color=(0,0,1),mode='sphere')
+if args['show_origin']:
+    mlab.points3d([0],[0],[0],color=(0,0,1),mode='sphere')
 
 # load the antenna profile
-profile,gainMax = loadProfile(args['antenna-profile-file'],
-                              args['null'])
+profile,gain_max,abs_gain_max = loadProfile(args['antenna-profile-file'],
+                                            args['null'])
 
-render(profile,gainMax,(0,1,0),args['line'])
+render(profile,gain_max,abs_gain_max,args['line'])
+
+if args['show_title']:
+    mlab.title(os.path.basename(args['antenna-profile-file']),size=.5)
 
 mlab.show()
