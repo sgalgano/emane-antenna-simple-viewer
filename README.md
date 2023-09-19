@@ -1,15 +1,16 @@
 emane-antenna-simple-viewer
 ==
 
-A simple EMANE antenna and blockage profile 3D rendering tool using
-[Mayavi][1].
+Simple EMANE antenna and blockage pattern 2D/3D rendering tools using
+[Mayavi][1] and [Matplotlib][2].
 
 ```
-$ emane-antenna-simple-viewer -l antenna30dsector.xml
+$ emane-antenna-simple-viewer-3d antenna30dsector.xml
+$ emane-antenna-simple-viewer-2d3d antenna30dsector.xml
 ```
 
 ![EMANE Antenna Simple Viewer](images/antenna30dsector.png)
 
 [1]: http://docs.enthought.com/mayavi/mayavi
-
+[2]: https://matplotlib.org
 

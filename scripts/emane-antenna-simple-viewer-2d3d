@@ -1,0 +1,307 @@
+#!/usr/bin/env python3
+#
+# Copyright (c) 2015,2017,2020,2023 - Adjacent Link LLC, Bridgewater,
+# New Jersey
+# All rights reserved.
+#
+# Redistribution and use in source and binary forms, with or without
+# modification, are permitted provided that the following conditions
+# are met:
+#
+# * Redistributions of source code must retain the above copyright
+#   notice, this list of conditions and the following disclaimer.
+# * Redistributions in binary form must reproduce the above copyright
+#   notice, this list of conditions and the following disclaimer in
+#   the documentation and/or other materials provided with the
+#   distribution.
+# * Neither the name of Adjacent Link LLC nor the names of its
+#   contributors may be used to endorse or promote products derived
+#   from this software without specific prior written permission.
+#
+# THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
+# "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
+# LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS
+# FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE
+# COPYRIGHT OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT,
+# INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING,
+# BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+# LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
+# CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
+# LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN
+# ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
+# POSSIBILITY OF SUCH DAMAGE.
+
+from lxml import etree
+from argparse import ArgumentParser
+import numpy as np
+import matplotlib.pyplot as plt
+import os
+import re
+from matplotlib.gridspec import GridSpec
+from matplotlib.widgets import Slider
+
+NUM_ELEVATION=181
+NUM_AZIMUTH=360
+
+def loadProfile(filename):
+    fill = np.nan
+    profile = np.empty((NUM_ELEVATION,NUM_AZIMUTH))
+    profile[:] = fill
+    gain_max = fill
+    abs_gain_max = np.nan
+    doc = etree.parse(filename)
+
+    root = doc.getroot()
+
+    for elevation in root.xpath('/antennaprofile//elevation'):
+        elevation_min = int(elevation.get('min'))
+        elevation_max = int(elevation.get('max'))
+
+        for azimuth in elevation.xpath('bearing'):
+            azimuth_min = int(azimuth.get('min'))
+            azimuth_max = int(azimuth.get('max'))
+
+            for gain in azimuth.xpath('gain'):
+                antenna_gain = float(gain.get('value'))
+                gain_max = max(antenna_gain,gain_max)
+                if np.isnan(abs_gain_max):
+                    abs_gain_max = np.abs(antenna_gain)
+                else:
+                    abs_gain_max = max(np.abs(antenna_gain),abs_gain_max)
+
+                for elevation_degrees in range(elevation_min,elevation_max+1):
+                    for azimuth_degrees in range(azimuth_min,azimuth_max+1):
+                        # convert elevation from [-90,90] to [0,180]
+                        profile[90 - elevation_degrees, azimuth_degrees] = antenna_gain
+
+    return (profile,gain_max,abs_gain_max)
+
+sliders = []
+axes = {}
+
+def render(profile,gain_max,abs_gain_max,default_phi,default_theta):
+
+    normalized_gain = abs_gain_max - gain_max
+    x = []
+    y = []
+    z = []
+    s = []
+
+    for elevation in range(0,NUM_ELEVATION):
+        for azimuth in range(0,NUM_AZIMUTH):
+            rho = profile[elevation,azimuth] + normalized_gain
+
+            if rho >= 0:
+                theta = np.radians(elevation)
+                phi = np.radians(azimuth)
+                x.append(rho * np.sin(theta) * np.cos(phi))
+                y.append(rho * np.sin(theta) * np.sin(phi))
+                z.append(rho * np.cos(theta))
+                s.append(profile[elevation,azimuth])
+
+    if len(x):
+        radian_xticks = [np.radians(x) for x in [0,30,60,90,120,150,180,210,240,270,300,330]]
+
+        fig = plt.figure()
+
+        gs = GridSpec(2, 2, figure=fig)
+
+        ax = fig.add_subplot(gs[0, 0],
+                             projection='polar')
+
+        axes['elevation'] = ax
+
+        def draw_elevation_2d(phi):
+            elevation_theta = []
+            elevation_rho = []
+
+            # elevation for phi = 90 0 and phi 270 180
+            for elevation in range(0,NUM_ELEVATION):
+                elevation_theta.append(np.radians(elevation))
+                elevation_rho.append(profile[elevation,phi])
+
+            for elevation in range(0,NUM_ELEVATION):
+                elevation_theta.append(np.radians(360-elevation))
+                elevation_rho.append(profile[elevation,phi+180])
+
+            ax =  axes['elevation']
+            ax.set_theta_zero_location("N")
+            ax.set_theta_direction(-1)
+            ax.set_title('Elevation Pattern')
+
+            ax.plot(elevation_theta, elevation_rho)
+
+            max_rho = ax.get_ylim()[1]
+
+            ax.annotate(r'$\phi$={}'.format(phi+180),
+                        xy=(45,max_rho),
+                        xytext=(.08,1.06),
+                        textcoords='axes fraction',
+                        horizontalalignment='right',
+                        verticalalignment='bottom')
+
+            ax.annotate(r'$\phi$={}'.format(phi),
+                        xy=(45,max_rho),
+                        xytext=(.92, 1.06),
+                        textcoords='axes fraction',
+                        horizontalalignment='left',
+                        verticalalignment='bottom')
+
+            ax.set_xticks(radian_xticks)
+
+        draw_elevation_2d(default_phi)
+
+        ax = fig.add_subplot(gs[0, 1],
+                             projection='polar')
+
+        axes['azimuth'] = ax
+
+        def draw_azimuth_2d(theta):
+            azimuth_phi = []
+            azimuth_rho = []
+            # azimuth for theta = 90 on [0,180]
+            for azimuth in range(0,NUM_AZIMUTH):
+                azimuth_phi.append(np.radians(azimuth))
+                azimuth_rho.append(profile[theta,azimuth])
+
+            ax = axes['azimuth']
+
+            ax.set_theta_zero_location("N")
+            ax.set_theta_direction(-1)
+            ax.set_title('Azimuth Pattern')
+
+            ax.plot(azimuth_phi, azimuth_rho)
+
+            max_rho = ax.get_ylim()[1]
+
+            ax.annotate(r'$\theta$={}'.format(theta),
+                        xy=(45,max_rho),
+                        xytext=(.92, 1.06),
+                        textcoords='axes fraction',
+                        horizontalalignment='left',
+                        verticalalignment='bottom')
+
+            ax.set_xticks(radian_xticks)
+
+        draw_azimuth_2d(default_theta)
+
+        ax = fig.add_subplot(gs[1,0:2],
+                              projection='3d')
+
+        ax.set_title('3D Pattern')
+
+        ax.scatter(x,y,z,c=s,vmin=min(s),vmax=max(s),cmap=plt.cm.jet)
+
+        ax.set(xticklabels=[],
+               yticklabels=[],
+               zticklabels=[])
+
+        plt.axis('off')
+
+        if args['outfile'] is None:
+            ax = plt.axes([0.10, 0.05, .80, 0.03])
+
+            slider_theta = Slider(ax=ax,
+                                  label=r'$\theta$',
+                                  valmin=0,
+                                  valmax=180,
+                                  valinit=default_theta,
+                                  valstep=1)
+
+            ax.add_artist(ax.xaxis)
+            sl_xticks = np.arange(0, 181, 30)
+            ax.set_xticks(sl_xticks)
+
+            def update_azimuth_2d(theta):
+                axes['azimuth'].cla()
+                draw_azimuth_2d(theta)
+
+            slider_theta.on_changed(update_azimuth_2d)
+
+            sliders.append(slider_theta)
+
+            ax = plt.axes([0.10, 0.10, .80, 0.03])
+
+            slider_phi = Slider(ax=ax,
+                                label=r'$\phi$',
+                                valmin=0,
+                                valmax=90,
+                                valinit=default_phi,
+                                valstep=1)
+
+            ax.add_artist(ax.xaxis)
+            sl_xticks = np.arange(0, 91, 15)
+            ax.set_xticks(sl_xticks)
+            ax.xaxis.tick_top()
+
+            def update_elevation_2d(phi):
+                axes['elevation'].cla()
+                draw_elevation_2d(phi)
+
+            slider_phi.on_changed(update_elevation_2d)
+
+            sliders.append(slider_phi)
+
+        else:
+            fig.tight_layout()
+
+
+description='Simple 2D/3D EMANE antenna pattern rendering utility.'
+
+argument_parser = ArgumentParser(description=description)
+
+argument_parser.add_argument('antenna-profile-file',
+                             type=str,
+                             default='',
+                             help='antenna profile XML file')
+
+argument_parser.add_argument('--elevation-pattern-phi',
+                             type=int,
+                             default=90,
+                             help='elevation pattern phi in degrees [default: %(default)s]')
+
+argument_parser.add_argument('--azimuth-pattern-theta',
+                             type=int,
+                             default=90,
+                             help='azimuth pattern theta in degrees [default: %(default)s]')
+
+argument_parser.add_argument('--outfile',
+                             '-o',
+                             nargs='?',
+                             type=str,
+                             const='',
+                             help='output PNG file name [default: <antenna-profile-file>.png]')
+
+argument_parser.add_argument('--outdir',
+                             type=str,
+                             default='.',
+                             help='output directory [default: %(default)s]')
+
+ns = argument_parser.parse_args()
+
+args = vars(ns)
+
+# load the antenna profile
+profile,gain_max,abs_gain_max = loadProfile(args['antenna-profile-file'])
+
+render(profile,
+       gain_max,
+       abs_gain_max,
+       args['elevation_pattern_phi'],
+       args['azimuth_pattern_theta'])
+
+title=os.path.basename(args['antenna-profile-file'])
+
+m = re.match(r'^(.*)\.xml$',title)
+
+if m:
+    title = m.group(1)
+
+plt.get_current_fig_manager().set_window_title(title)
+
+if  args['outfile']is None:
+    plt.show()
+else:
+    outfile = args['outfile'] if args['outfile'] != '' else '{}.png'.format(title)
+    plt.savefig(os.path.join(args['outdir'],outfile))
+    plt.close()

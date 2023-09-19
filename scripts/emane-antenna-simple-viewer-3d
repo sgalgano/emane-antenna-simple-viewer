@@ -1,6 +1,6 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 #
-# Copyright (c) 2015,2017,2020 - Adjacent Link LLC, Bridgewater,
+# Copyright (c) 2015,2017,2020,2023 - Adjacent Link LLC, Bridgewater,
 # New Jersey
 # All rights reserved.
 #
@@ -31,20 +31,18 @@
 # ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
 # POSSIBILITY OF SUCH DAMAGE.
 
-from __future__ import absolute_import, division, print_function
-
 from lxml import etree
 from argparse import ArgumentParser
 from mayavi import mlab
 import numpy as np
-import matplotlib.pyplot as plt
 import os
+import re
 
 NUM_ELEVATION=181
-NUM_BEARING=360
+NUM_AZIMUTH=360
 
 def loadProfile(filename,fill):
-    profile = np.empty((NUM_ELEVATION,NUM_BEARING))
+    profile = np.empty((NUM_ELEVATION,NUM_AZIMUTH))
     profile[:] = fill
     gain_max = fill
     abs_gain_max = None
@@ -56,12 +54,12 @@ def loadProfile(filename,fill):
         elevation_min = int(elevation.get('min'))
         elevation_max = int(elevation.get('max'))
 
-        for bearing in elevation.xpath('bearing'):
-            bearing_min = int(bearing.get('min'))
-            bearing_max = int(bearing.get('max'))
+        for azimuth in elevation.xpath('bearing'):
+            azimuth_min = int(azimuth.get('min'))
+            azimuth_max = int(azimuth.get('max'))
 
-            for gain in bearing.xpath('gain'):
-                antenna_gain = int(round(float(gain.get('value'))))
+            for gain in azimuth.xpath('gain'):
+                antenna_gain = float(gain.get('value'))
                 gain_max = max(antenna_gain,gain_max)
                 if abs_gain_max == None:
                     abs_gain_max = np.abs(antenna_gain)
@@ -69,9 +67,9 @@ def loadProfile(filename,fill):
                     abs_gain_max = max(np.abs(antenna_gain),abs_gain_max)
 
                 for elevation_degrees in range(elevation_min,elevation_max+1):
-                    for bearing_degrees in range(bearing_min,bearing_max+1):
-                        # convert elevation to index: [0,180]
-                        profile[elevation_degrees + 90, bearing_degrees] = antenna_gain
+                    for azimuth_degrees in range(azimuth_min,azimuth_max+1):
+                        # convert elevation from [-90,90] to [0,180]
+                        profile[90 - elevation_degrees, azimuth_degrees] = antenna_gain
 
     return (profile,gain_max,abs_gain_max)
 
@@ -82,37 +80,38 @@ def render(profile,gain_max,abs_gain_max,use_line):
     y = []
     z = []
     s = []
+
     for elevation in range(0,NUM_ELEVATION):
-        for bearing in range(0,NUM_BEARING):
-            rho =  profile[elevation,bearing] + normalized_gain
+        for azimuth in range(0,NUM_AZIMUTH):
+            rho = profile[elevation,azimuth] + normalized_gain
 
             if rho >= 0:
-                theta =  np.radians(bearing)
-                phi = np.radians(elevation)
+                theta = np.radians(elevation)
+                phi = np.radians(azimuth)
+                x.append(rho * np.sin(theta) * np.cos(phi))
+                y.append(rho * np.sin(theta) * np.sin(phi))
+                z.append(rho * np.cos(theta))
+                s.append(profile[elevation,azimuth])
 
-                x.append(rho * np.sin(phi) * np.cos(theta))
-                y.append(rho * np.sin(phi) * np.sin(theta))
-                z.append(rho * np.cos(phi))
-                s.append(profile[elevation,bearing])
 
     if len(x):
         if use_line:
             mlab.plot3d(x,y,z,color=(0,1,0),tube_radius=.5)
         else:
             pts = mlab.points3d(x,y,z,s,mode='point')
-            pts.glyph.glyph.color_mode = 'color_by_scalar'
-            pts.glyph.color_mode = 'color_by_scalar'
-            pts.glyph.glyph.scale_mode = 'data_scaling_off'
-            lut = pts.module_manager.scalar_lut_manager.lut.table.to_array()
-            cmap = plt.cm.coolwarm
-            pts.module_manager.scalar_lut_manager.lut.table = lut
-            pts.module_manager.scalar_lut_manager.show_scalar_bar = True
-            pts.module_manager.scalar_lut_manager.show_legend = True
-            pts.module_manager.scalar_lut_manager.data_range = np.array([min(s), max(s)])
-            pts.module_manager.scalar_lut_manager.data_name=''
 
+            if not args['hide_colorbar']:
+                pts.glyph.glyph.color_mode = 'color_by_scalar'
+                pts.glyph.color_mode = 'color_by_scalar'
+                pts.glyph.glyph.scale_mode = 'data_scaling_off'
+                lut = pts.module_manager.scalar_lut_manager.lut.table.to_array()
+                pts.module_manager.scalar_lut_manager.lut.table = lut
+                pts.module_manager.scalar_lut_manager.show_scalar_bar = True
+                pts.module_manager.scalar_lut_manager.show_legend = True
+                pts.module_manager.scalar_lut_manager.data_range = np.array([min(s), max(s)])
+                pts.module_manager.scalar_lut_manager.data_name=''
 
-description='Simple rendering utility for EMANE antenna patterns.'
+description='Simple 3D EMANE antenna pattern rendering utility.'
 
 argument_parser = ArgumentParser(description=description)
 
@@ -124,7 +123,7 @@ argument_parser.add_argument('antenna-profile-file',
 argument_parser.add_argument('--null',
                              type=float,
                              metavar='DECIBELS',
-                             default=-200,
+                             default=np.nan,
                              help='null value representing full loss in dB [default: %(default)s]')
 
 argument_parser.add_argument("-l",
@@ -139,17 +138,31 @@ argument_parser.add_argument("-t",
                              default=False,
                              help="show title [default: %(default)s]")
 
-argument_parser.add_argument("-o",
-                             "--show-origin",
+argument_parser.add_argument("--show-origin",
                              action='store_true',
                              default=False,
                              help="show origin [default: %(default)s]")
 
+argument_parser.add_argument("--hide-colorbar",
+                             action='store_true',
+                             default=False,
+                             help="hide colorbar [default: %(default)s]")
+
+argument_parser.add_argument('--outfile',
+                             '-o',
+                             nargs='?',
+                             type=str,
+                             const='',
+                             help='output PNG file name [default: <antenna-profile-file>.png]')
+
+argument_parser.add_argument('--outdir',
+                             type=str,
+                             default='.',
+                             help='output directory [default: %(default)s]')
+
 ns = argument_parser.parse_args()
 
 args = vars(ns)
-
-mlab.figure('EMANE Antenna Simple Viewer')
 
 if args['show_origin']:
     mlab.points3d([0],[0],[0],color=(0,0,1),mode='sphere')
@@ -158,9 +171,27 @@ if args['show_origin']:
 profile,gain_max,abs_gain_max = loadProfile(args['antenna-profile-file'],
                                             args['null'])
 
+if args['outfile'] is not None:
+    mlab.options.offscreen = True
+
+mlab.figure('EMANE Antenna Simple Viewer',
+            bgcolor = (1,1,1),
+            fgcolor = (0,0,0))
+
 render(profile,gain_max,abs_gain_max,args['line'])
 
-if args['show_title']:
-    mlab.title(os.path.basename(args['antenna-profile-file']),size=.5)
+title=os.path.basename(args['antenna-profile-file'])
 
-mlab.show()
+m = re.match(r'^(.*)\.xml$',title)
+
+if m:
+    title = m.group(1)
+
+if args['show_title']:
+    mlab.title('     {}'.format(title),size=.5,height=.05)
+
+if  args['outfile'] is None:
+    mlab.show()
+else:
+    outfile = args['outfile'] if args['outfile'] != '' else '{}.png'.format(title)
+    mlab.savefig(os.path.join(args['outdir'],outfile))
